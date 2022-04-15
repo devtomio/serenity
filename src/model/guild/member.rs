@@ -231,7 +231,7 @@ impl Member {
 
         for channel in guild.channels.values() {
             if let Channel::Guild(channel) = channel {
-                if guild.user_permissions_in(channel, member).ok()?.read_messages() {
+                if guild.user_permissions_in(channel, member).ok()?.view_channel() {
                     return Some(channel.clone());
                 }
             }
@@ -488,7 +488,7 @@ impl Member {
     /// ```rust,ignore
     /// // assuming there's a `member` variable gotten from anything.
     /// println!("The permission bits for the member are: {}",
-    /// member.permissions().expect("permissions").bits);
+    /// member.permissions(&cache).expect("permissions").bits());
     /// ```
     ///
     /// # Errors
