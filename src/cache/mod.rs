@@ -132,17 +132,17 @@ pub struct Cache {
     /// When a [`Event::GuildDelete`] or [`Event::GuildUnavailable`] is
     /// received and processed by the cache, the relevant channels are also
     /// removed from this map.
-    pub(crate) channels: DashMap<ChannelId, GuildChannel>,
+    pub channels: DashMap<ChannelId, GuildChannel>,
     /// Cache of channels that have been fetched via to_channel.
     ///
     /// Each value has a maximum TTL of 1 hour.
     #[cfg(feature = "temp_cache")]
     pub(crate) temp_channels: DashCache<ChannelId, GuildChannel>,
     /// A map of channel categories.
-    pub(crate) categories: DashMap<ChannelId, ChannelCategory>,
+    pub categories: DashMap<ChannelId, ChannelCategory>,
     /// A map of guilds with full data available. This includes data like
     /// [`Role`]s and [`Emoji`]s that are not available through the REST API.
-    pub(crate) guilds: DashMap<GuildId, Guild>,
+    pub guilds: DashMap<GuildId, Guild>,
     pub(crate) messages: MessageCache,
     /// A map of users' presences. This is updated in real-time. Note that
     /// status updates are often "eaten" by the gateway, and this should not
@@ -159,7 +159,7 @@ pub struct Cache {
     /// Additionally, guilds are always unavailable for bot users when a Ready
     /// is received. Guilds are "sent in" over time through the receiving of
     /// [`Event::GuildCreate`]s.
-    pub(crate) unavailable_guilds: DashSet<GuildId>,
+    pub unavailable_guilds: DashSet<GuildId>,
     /// The current user "logged in" and for which events are being received
     /// for.
     ///
@@ -995,7 +995,7 @@ impl Cache {
         e.update(self)
     }
 
-    pub(crate) fn update_user_entry(&self, user: &User) {
+    pub fn update_user_entry(&self, user: &User) {
         match self.users.entry(user.id) {
             Entry::Vacant(e) => {
                 e.insert(user.clone());
