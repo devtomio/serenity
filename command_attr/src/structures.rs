@@ -14,6 +14,7 @@ use syn::{
     FnArg,
     Ident,
     Pat,
+    Path,
     ReturnType,
     Stmt,
     Token,
@@ -24,10 +25,11 @@ use syn::{
 use crate::consts::CHECK;
 use crate::util::{self, Argument, AsOption, IdentExt2, Parenthesised};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Default, Eq, PartialEq)]
 pub enum OnlyIn {
     Dm,
     Guild,
+    #[default]
     None,
 }
 
@@ -46,17 +48,10 @@ impl ToTokens for OnlyIn {
     fn to_tokens(&self, stream: &mut TokenStream2) {
         let only_in_path = quote!(serenity::framework::standard::OnlyIn);
         match self {
-            OnlyIn::Dm => stream.extend(quote!(#only_in_path::Dm)),
-            OnlyIn::Guild => stream.extend(quote!(#only_in_path::Guild)),
-            OnlyIn::None => stream.extend(quote!(#only_in_path::None)),
+            Self::Dm => stream.extend(quote!(#only_in_path::Dm)),
+            Self::Guild => stream.extend(quote!(#only_in_path::Guild)),
+            Self::None => stream.extend(quote!(#only_in_path::None)),
         }
-    }
-}
-
-impl Default for OnlyIn {
-    #[inline]
-    fn default() -> Self {
-        OnlyIn::None
     }
 }
 
@@ -88,11 +83,11 @@ fn parse_argument(arg: FnArg) -> Result<Argument> {
                         kind: *kind,
                     })
                 },
-                _ => Err(Error::new(pat.span(), format_args!("unsupported pattern: {:?}", pat))),
+                _ => Err(Error::new(pat.span(), format_args!("unsupported pattern: {pat:?}"))),
             }
         },
         FnArg::Receiver(_) => {
-            Err(Error::new(arg.span(), format_args!("`self` arguments are prohibited: {:?}", arg)))
+            Err(Error::new(arg.span(), format_args!("`self` arguments are prohibited: {arg:?}")))
         },
     }
 }
@@ -105,7 +100,12 @@ fn is_cooked(attr: &Attribute) -> bool {
     COOKED_ATTRIBUTE_NAMES.iter().any(|n| attr.path.is_ident(n))
 }
 
-/// Removes cooked attributes from a vector of attributes. Uncooked attributes are left in the vector.
+pub fn is_rustfmt_or_clippy_attr(path: &Path) -> bool {
+    path.segments.first().is_some_and(|s| s.ident == "rustfmt" || s.ident == "clippy")
+}
+
+/// Removes cooked attributes from a vector of attributes. Uncooked attributes are left in the
+/// vector.
 ///
 /// # Return
 ///
@@ -116,7 +116,7 @@ fn remove_cooked(attrs: &mut Vec<Attribute>) -> Vec<Attribute> {
     // FIXME: Replace with `Vec::drain_filter` once it is stable.
     let mut i = 0;
     while i < attrs.len() {
-        if !is_cooked(&attrs[i]) {
+        if !is_cooked(&attrs[i]) && !is_rustfmt_or_clippy_attr(&attrs[i].path) {
             i += 1;
             continue;
         }
@@ -131,8 +131,8 @@ fn remove_cooked(attrs: &mut Vec<Attribute>) -> Vec<Attribute> {
 pub struct CommandFun {
     /// `#[...]`-style attributes.
     pub attributes: Vec<Attribute>,
-    /// Populated cooked attributes. These are attributes outside of the realm of this crate's procedural macros
-    /// and will appear in generated output.
+    /// Populated cooked attributes. These are attributes outside of the realm of this crate's
+    /// procedural macros and will appear in generated output.
     pub cooked: Vec<Attribute>,
     pub visibility: Visibility,
     pub name: Ident,
@@ -210,11 +210,7 @@ impl ToTokens for CommandFun {
 
 #[derive(Debug)]
 pub struct FunctionHook {
-    /// `#[...]`-style attributes.
     pub attributes: Vec<Attribute>,
-    /// Populated by cooked attributes. These are attributes outside of the realm of this crate's procedural macros
-    /// and will appear in generated output.
-    pub cooked: Vec<Attribute>,
     pub visibility: Visibility,
     pub name: Ident,
     pub args: Vec<Argument>,
@@ -224,11 +220,7 @@ pub struct FunctionHook {
 
 #[derive(Debug)]
 pub struct ClosureHook {
-    /// `#[...]`-style attributes.
     pub attributes: Vec<Attribute>,
-    /// Populated by cooked attributes. These are attributes outside of the realm of this crate's procedural macros
-    /// and will appear in generated output.
-    pub cooked: Vec<Attribute>,
     pub args: Punctuated<Pat, Token![,]>,
     pub ret: ReturnType,
     pub body: Box<Expr>,
@@ -242,13 +234,12 @@ pub enum Hook {
 
 impl Parse for Hook {
     fn parse(input: ParseStream<'_>) -> Result<Self> {
-        let mut attributes = input.call(Attribute::parse_outer)?;
-        let cooked = remove_cooked(&mut attributes);
+        let attributes = input.call(Attribute::parse_outer)?;
 
         if is_function(input) {
-            parse_function_hook(input, attributes, cooked).map(|h| Self::Function(Box::new(h)))
+            parse_function_hook(input, attributes).map(|h| Self::Function(Box::new(h)))
         } else {
-            parse_closure_hook(input, attributes, cooked).map(Self::Closure)
+            parse_closure_hook(input, attributes).map(Self::Closure)
         }
     }
 }
@@ -257,11 +248,7 @@ fn is_function(input: ParseStream<'_>) -> bool {
     input.peek(Token![pub]) || (input.peek(Token![async]) && input.peek2(Token![fn]))
 }
 
-fn parse_function_hook(
-    input: ParseStream<'_>,
-    attributes: Vec<Attribute>,
-    cooked: Vec<Attribute>,
-) -> Result<FunctionHook> {
+fn parse_function_hook(input: ParseStream<'_>, attributes: Vec<Attribute>) -> Result<FunctionHook> {
     let visibility = input.parse::<Visibility>()?;
 
     input.parse::<Token![async]>()?;
@@ -288,7 +275,6 @@ fn parse_function_hook(
 
     Ok(FunctionHook {
         attributes,
-        cooked,
         visibility,
         name,
         args,
@@ -297,17 +283,12 @@ fn parse_function_hook(
     })
 }
 
-fn parse_closure_hook(
-    input: ParseStream<'_>,
-    attributes: Vec<Attribute>,
-    cooked: Vec<Attribute>,
-) -> Result<ClosureHook> {
+fn parse_closure_hook(input: ParseStream<'_>, attributes: Vec<Attribute>) -> Result<ClosureHook> {
     input.parse::<Token![async]>()?;
     let closure = input.parse::<ExprClosure>()?;
 
     Ok(ClosureHook {
         attributes,
-        cooked,
         args: closure.inputs,
         ret: closure.output,
         body: closure.body,
@@ -323,35 +304,54 @@ impl Permissions {
             "PRESET_GENERAL" => 0b0000_0110_0011_0111_1101_1100_0100_0001,
             "PRESET_TEXT" => 0b0000_0000_0000_0111_1111_1100_0100_0000,
             "PRESET_VOICE" => 0b0000_0011_1111_0000_0000_0000_0000_0000,
-            "CREATE_INVITE" => 0b0000_0000_0000_0000_0000_0000_0000_0001,
-            "KICK_MEMBERS" => 0b0000_0000_0000_0000_0000_0000_0000_0010,
-            "BAN_MEMBERS" => 0b0000_0000_0000_0000_0000_0000_0000_0100,
-            "ADMINISTRATOR" => 0b0000_0000_0000_0000_0000_0000_0000_1000,
-            "MANAGE_CHANNELS" => 0b0000_0000_0000_0000_0000_0000_0001_0000,
-            "MANAGE_GUILD" => 0b0000_0000_0000_0000_0000_0000_0010_0000,
-            "ADD_REACTIONS" => 0b0000_0000_0000_0000_0000_0000_0100_0000,
-            "VIEW_AUDIT_LOG" => 0b0000_0000_0000_0000_0000_0000_1000_0000,
-            "PRIORITY_SPEAKER" => 0b0000_0000_0000_0000_0000_0001_0000_0000,
-            "READ_MESSAGES" => 0b0000_0000_0000_0000_0000_0100_0000_0000,
-            "SEND_MESSAGES" => 0b0000_0000_0000_0000_0000_1000_0000_0000,
-            "SEND_TTS_MESSAGES" => 0b0000_0000_0000_0000_0001_0000_0000_0000,
-            "MANAGE_MESSAGES" => 0b0000_0000_0000_0000_0010_0000_0000_0000,
-            "EMBED_LINKS" => 0b0000_0000_0000_0000_0100_0000_0000_0000,
-            "ATTACH_FILES" => 0b0000_0000_0000_0000_1000_0000_0000_0000,
-            "READ_MESSAGE_HISTORY" => 0b0000_0000_0000_0001_0000_0000_0000_0000,
-            "MENTION_EVERYONE" => 0b0000_0000_0000_0010_0000_0000_0000_0000,
-            "USE_EXTERNAL_EMOJIS" => 0b0000_0000_0000_0100_0000_0000_0000_0000,
-            "CONNECT" => 0b0000_0000_0001_0000_0000_0000_0000_0000,
-            "SPEAK" => 0b0000_0000_0010_0000_0000_0000_0000_0000,
-            "MUTE_MEMBERS" => 0b0000_0000_0100_0000_0000_0000_0000_0000,
-            "DEAFEN_MEMBERS" => 0b0000_0000_1000_0000_0000_0000_0000_0000,
-            "MOVE_MEMBERS" => 0b0000_0001_0000_0000_0000_0000_0000_0000,
-            "USE_VAD" => 0b0000_0010_0000_0000_0000_0000_0000_0000,
-            "CHANGE_NICKNAME" => 0b0000_0100_0000_0000_0000_0000_0000_0000,
-            "MANAGE_NICKNAMES" => 0b0000_1000_0000_0000_0000_0000_0000_0000,
-            "MANAGE_ROLES" => 0b0001_0000_0000_0000_0000_0000_0000_0000,
-            "MANAGE_WEBHOOKS" => 0b0010_0000_0000_0000_0000_0000_0000_0000,
-            "MANAGE_EMOJIS_AND_STICKERS" => 0b0100_0000_0000_0000_0000_0000_0000_0000,
+            "CREATE_INVITE" | "CREATE_INSTANT_INVITE" => 1 << 0,
+            "KICK_MEMBERS" => 1 << 1,
+            "BAN_MEMBERS" => 1 << 2,
+            "ADMINISTRATOR" => 1 << 3,
+            "MANAGE_CHANNELS" => 1 << 4,
+            "MANAGE_GUILD" => 1 << 5,
+            "ADD_REACTIONS" => 1 << 6,
+            "VIEW_AUDIT_LOG" => 1 << 7,
+            "PRIORITY_SPEAKER" => 1 << 8,
+            "STREAM" => 1 << 9,
+            "VIEW_CHANNEL" => 1 << 10,
+            "SEND_MESSAGES" => 1 << 11,
+            "SEND_TTS_MESSAGES" => 1 << 12,
+            "MANAGE_MESSAGES" => 1 << 13,
+            "EMBED_LINKS" => 1 << 14,
+            "ATTACH_FILES" => 1 << 15,
+            "READ_MESSAGE_HISTORY" => 1 << 16,
+            "MENTION_EVERYONE" => 1 << 17,
+            "USE_EXTERNAL_EMOJIS" => 1 << 18,
+            "VIEW_GUILD_INSIGHTS" => 1 << 19,
+            "CONNECT" => 1 << 20,
+            "SPEAK" => 1 << 21,
+            "MUTE_MEMBERS" => 1 << 22,
+            "DEAFEN_MEMBERS" => 1 << 23,
+            "MOVE_MEMBERS" => 1 << 24,
+            "USE_VAD" => 1 << 25,
+            "CHANGE_NICKNAME" => 1 << 26,
+            "MANAGE_NICKNAMES" => 1 << 27,
+            "MANAGE_ROLES" => 1 << 28,
+            "MANAGE_WEBHOOKS" => 1 << 29,
+            "MANAGE_EMOJIS_AND_STICKERS" | "MANAGE_GUILD_EXPRESSIONS" => 1 << 30,
+            "USE_SLASH_COMMANDS" | "USE_APPLICATION_COMMANDS" => 1 << 31,
+            "REQUEST_TO_SPEAK" => 1 << 32,
+            "MANAGE_EVENTS" => 1 << 33,
+            "MANAGE_THREADS" => 1 << 34,
+            "CREATE_PUBLIC_THREADS" => 1 << 35,
+            "CREATE_PRIVATE_THREADS" => 1 << 36,
+            "USE_EXTERNAL_STICKERS" => 1 << 37,
+            "SEND_MESSAGES_IN_THREADS" => 1 << 38,
+            "USE_EMBEDDED_ACTIVITIES" => 1 << 39,
+            "MODERATE_MEMBERS" => 1 << 40,
+            "VIEW_CREATOR_MONETIZATION_ANALYTICS" => 1 << 41,
+            "USE_SOUNDBOARD" => 1 << 42,
+            "CREATE_GUILD_EXPRESSIONS" => 1 << 43,
+            "CREATE_EVENTS" => 1 << 44,
+            "USE_EXTERNAL_SOUNDS" => 1 << 45,
+            "SEND_VOICE_MESSAGES" => 1 << 46,
+            "SET_VOICE_CHANNEL_STATUS" => 1 << 48,
             _ => return None,
         }))
     }
@@ -369,7 +369,7 @@ impl ToTokens for Permissions {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Colour(pub u32);
 
 impl Colour {
@@ -421,7 +421,7 @@ impl Colour {
 impl ToTokens for Colour {
     fn to_tokens(&self, stream: &mut TokenStream2) {
         let value = self.0;
-        let path = quote!(serenity::utils::Colour);
+        let path = quote!(serenity::model::Colour);
 
         stream.extend(quote! {
             #path(#value)
@@ -470,7 +470,7 @@ impl Options {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum HelpBehaviour {
     Strike,
     Hide,
@@ -492,14 +492,14 @@ impl ToTokens for HelpBehaviour {
     fn to_tokens(&self, stream: &mut TokenStream2) {
         let help_behaviour_path = quote!(serenity::framework::standard::HelpBehaviour);
         match self {
-            HelpBehaviour::Strike => stream.extend(quote!(#help_behaviour_path::Strike)),
-            HelpBehaviour::Hide => stream.extend(quote!(#help_behaviour_path::Hide)),
-            HelpBehaviour::Nothing => stream.extend(quote!(#help_behaviour_path::Nothing)),
+            Self::Strike => stream.extend(quote!(#help_behaviour_path::Strike)),
+            Self::Hide => stream.extend(quote!(#help_behaviour_path::Hide)),
+            Self::Nothing => stream.extend(quote!(#help_behaviour_path::Nothing)),
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct HelpOptions {
     pub suggestion_text: String,
     pub no_help_available_text: String,

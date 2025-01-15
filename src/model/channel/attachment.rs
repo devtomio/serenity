@@ -1,32 +1,55 @@
 #[cfg(feature = "model")]
 use reqwest::Client as ReqwestClient;
+use serde_cow::CowStr;
 
 #[cfg(feature = "model")]
 use crate::internal::prelude::*;
-use crate::model::id::AttachmentId;
+use crate::model::prelude::*;
 use crate::model::utils::is_false;
+
+fn base64_bytes<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use base64::Engine as _;
+    use serde::de::Error;
+
+    let base64 = <Option<CowStr<'de>>>::deserialize(deserializer)?;
+    let bytes = match base64 {
+        Some(CowStr(base64)) => {
+            Some(base64::prelude::BASE64_STANDARD.decode(&*base64).map_err(D::Error::custom)?)
+        },
+        None => None,
+    };
+    Ok(bytes)
+}
 
 /// A file uploaded with a message. Not to be confused with [`Embed`]s.
 ///
+/// [Discord docs](https://discord.com/developers/docs/resources/channel#attachment-object).
+///
 /// [`Embed`]: super::Embed
+#[cfg_attr(feature = "typesize", derive(typesize::derive::TypeSize))]
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[non_exhaustive]
 pub struct Attachment {
     /// The unique ID given to this attachment.
     pub id: AttachmentId,
-    /// The filename of the file that was uploaded. This is equivalent to what
-    /// the uploader had their file named.
+    /// The filename of the file that was uploaded. This is equivalent to what the uploader had
+    /// their file named.
     pub filename: String,
+    /// Description for the file (max 1024 characters).
+    pub description: Option<String>,
     /// If the attachment is an image, then the height of the image is provided.
-    pub height: Option<u64>,
+    pub height: Option<u32>,
     /// The proxy URL.
     pub proxy_url: String,
     /// The size of the file in bytes.
-    pub size: u64,
+    pub size: u32,
     /// The URL of the uploaded attachment.
     pub url: String,
     /// If the attachment is an image, then the width of the image is provided.
-    pub width: Option<u64>,
+    pub width: Option<u32>,
     /// The attachment's [media type].
     ///
     /// [media type]: https://en.wikipedia.org/wiki/Media_type
@@ -35,17 +58,30 @@ pub struct Attachment {
     ///
     /// Ephemeral attachments will automatically be removed after a set period of time.
     ///
-    /// Ephemeral attachments on messages are guaranteed to be available as long as
-    /// the message itself exists.
+    /// Ephemeral attachments on messages are guaranteed to be available as long as the message
+    /// itself exists.
     #[serde(default, skip_serializing_if = "is_false")]
     pub ephemeral: bool,
+    /// The duration of the audio file (present if [`MessageFlags::IS_VOICE_MESSAGE`]).
+    pub duration_secs: Option<f64>,
+    /// List of bytes representing a sampled waveform (present if
+    /// [`MessageFlags::IS_VOICE_MESSAGE`]).
+    ///
+    /// The waveform is intended to be a preview of the entire voice message, with 1 byte per
+    /// datapoint. Clients sample the recording at most once per 100 milliseconds, but will
+    /// downsample so that no more than 256 datapoints are in the waveform.
+    ///
+    /// The waveform details are a Discord implementation detail and may change without warning or
+    /// documentation.
+    #[serde(default, deserialize_with = "base64_bytes")]
+    pub waveform: Option<Vec<u8>>,
 }
 
 #[cfg(feature = "model")]
 impl Attachment {
-    /// If this attachment is an image, then a tuple of the width and height
-    /// in pixels is returned.
-    pub fn dimensions(&self) -> Option<(u64, u64)> {
+    /// If this attachment is an image, then a tuple of the width and height in pixels is returned.
+    #[must_use]
+    pub fn dimensions(&self) -> Option<(u32, u32)> {
         self.width.and_then(|width| self.height.map(|height| (width, height)))
     }
 
@@ -56,8 +92,6 @@ impl Attachment {
     /// Download all of the attachments associated with a [`Message`]:
     ///
     /// ```rust,no_run
-    /// # #[cfg(feature = "client")]
-    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
     /// use std::io::Write;
     /// use std::path::Path;
     ///
@@ -66,9 +100,10 @@ impl Attachment {
     /// use tokio::fs::File;
     /// use tokio::io::AsyncWriteExt;
     ///
-    /// struct Handler;
+    /// # struct Handler;
     ///
     /// #[serenity::async_trait]
+    /// # #[cfg(feature = "client")]
     /// impl EventHandler for Handler {
     ///     async fn message(&self, context: Context, mut message: Message) {
     ///         for attachment in message.attachments {
@@ -101,34 +136,19 @@ impl Attachment {
     ///
     ///             let _ = message
     ///                 .channel_id
-    ///                 .say(&context, &format!("Saved {:?}", attachment.filename))
+    ///                 .say(&context, format!("Saved {:?}", attachment.filename))
     ///                 .await;
     ///         }
     ///     }
-    ///
-    ///     async fn ready(&self, _: Context, ready: Ready) {
-    ///         println!("{} is connected!", ready.user.name);
-    ///     }
     /// }
-    /// let token = std::env::var("DISCORD_TOKEN")?;
-    /// let mut client =
-    ///     Client::builder(&token, GatewayIntents::default()).event_handler(Handler).await?;
-    ///
-    /// client.start().await?;
-    /// #     Ok(())
-    /// # }
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns an [`Error::Io`] when there is a problem reading the contents
-    /// of the HTTP response.
+    /// Returns an [`Error::Io`] when there is a problem reading the contents of the HTTP response.
     ///
-    /// Returns an [`Error::Http`] when there is a problem retrieving the
-    /// attachment.
+    /// Returns an [`Error::Http`] when there is a problem retrieving the attachment.
     ///
-    /// [`Error::Http`]: crate::Error::Http
-    /// [`Error::Io`]: crate::Error::Io
     /// [`Message`]: super::Message
     pub async fn download(&self) -> Result<Vec<u8>> {
         let reqwest = ReqwestClient::new();

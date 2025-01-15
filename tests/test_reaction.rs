@@ -1,4 +1,3 @@
-use std::convert::TryFrom;
 use std::str::FromStr;
 
 use serenity::model::channel::ReactionType;
@@ -10,7 +9,7 @@ fn str_to_reaction_type() {
     let reaction = ReactionType::try_from(emoji_str).unwrap();
     let reaction2 = ReactionType::Custom {
         animated: false,
-        id: EmojiId(600404340292059257),
+        id: EmojiId::new(600404340292059257),
         name: Some("customemoji".to_string()),
     };
     assert_eq!(reaction, reaction2);
@@ -22,7 +21,7 @@ fn str_to_reaction_type_animated() {
     let reaction = ReactionType::try_from(emoji_str).unwrap();
     let reaction2 = ReactionType::Custom {
         animated: true,
-        id: EmojiId(600409340292059257),
+        id: EmojiId::new(600409340292059257),
         name: Some("customemoji2".to_string()),
     };
     assert_eq!(reaction, reaction2);
@@ -34,7 +33,7 @@ fn string_to_reaction_type() {
     let reaction = ReactionType::try_from(emoji_string).unwrap();
     let reaction2 = ReactionType::Custom {
         animated: false,
-        id: EmojiId(600404340292059257),
+        id: EmojiId::new(600404340292059257),
         name: Some("customemoji".to_string()),
     };
     assert_eq!(reaction, reaction2);

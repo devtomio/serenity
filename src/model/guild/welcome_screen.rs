@@ -3,7 +3,11 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::model::id::{ChannelId, EmojiId};
 
 /// Information relating to a guild's welcome screen.
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/guild#welcome-screen-object).
+#[cfg_attr(feature = "typesize", derive(typesize::derive::TypeSize))]
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[non_exhaustive]
 pub struct GuildWelcomeScreen {
     /// The server description shown in the welcome screen.
     pub description: Option<String>,
@@ -14,6 +18,9 @@ pub struct GuildWelcomeScreen {
 }
 
 /// A channel shown in the [`GuildWelcomeScreen`].
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/guild#welcome-screen-object-welcome-screen-channel-structure).
+#[cfg_attr(feature = "typesize", derive(typesize::derive::TypeSize))]
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct GuildWelcomeChannel {
@@ -25,6 +32,7 @@ pub struct GuildWelcomeChannel {
     pub emoji: Option<GuildWelcomeChannelEmoji>,
 }
 
+// Manual impl needed to deserialize emoji_id and emoji_name into a single GuildWelcomeChannelEmoji
 impl<'de> Deserialize<'de> for GuildWelcomeChannel {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(Deserialize)]
@@ -80,6 +88,9 @@ impl Serialize for GuildWelcomeChannel {
 }
 
 /// A [`GuildWelcomeScreen`] emoji.
+///
+/// [Discord docs](https://discord.com/developers/docs/resources/guild#welcome-screen-object-welcome-screen-channel-structure).
+#[cfg_attr(feature = "typesize", derive(typesize::derive::TypeSize))]
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 #[non_exhaustive]
 pub enum GuildWelcomeChannelEmoji {

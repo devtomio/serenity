@@ -2,7 +2,7 @@ use std::env;
 
 use serenity::async_trait;
 use serenity::model::channel::Message;
-use serenity::model::gateway::{GatewayIntents, Presence, Ready};
+use serenity::model::gateway::{Presence, Ready};
 use serenity::prelude::*;
 
 struct Handler;
@@ -41,9 +41,9 @@ async fn main() {
 
     // Finally, start a single shard, and start listening to events.
     //
-    // Shards will automatically attempt to reconnect, and will perform
-    // exponential backoff until it reconnects.
+    // Shards will automatically attempt to reconnect, and will perform exponential backoff until
+    // it reconnects.
     if let Err(why) = client.start().await {
-        println!("Client error: {:?}", why);
+        println!("Client error: {why:?}");
     }
 }

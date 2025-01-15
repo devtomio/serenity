@@ -1,30 +1,26 @@
-use super::*;
-use crate::client::Context;
+use super::{Command, *};
 use crate::model::prelude::*;
 
 pub mod map;
 
 use std::borrow::Cow;
-#[cfg(feature = "cache")]
-use std::collections::HashMap;
 
-use futures::future::{BoxFuture, FutureExt};
-use map::{CommandMap, GroupMap, ParseMap};
-use uwl::Stream;
+use futures::FutureExt;
+use map::ParseMap;
 
 // FIXME: Add the `http` parameter to `Guild::user_permissions_in`.
 //
-// Trying to shove the parameter to the original method results in several errors
-// and interface changes to methods using `Guild::user_permissions_in` that are not
-// worthwhile to resolve. As a compromise, the method has been copied with the parameter
-// added in to the place where the *problem* occurs.
+// Trying to shove the parameter to the original method results in several errors and interface
+// changes to methods using `Guild::user_permissions_in` that are not worthwhile to resolve. As a
+// compromise, the method has been copied with the parameter added in to the place where the
+// *problem* occurs.
 //
-// When a bot's command is invoked in a large guild (e.g., 250k+ members), the method
-// fails to retrieve the member data of the author that invoked the command, and instead
-// defaults to `@everyone`'s permissions. This is because Discord does not send data of
-// all members past 250, resulting in the problem to meet permissions of a command even if
-// the author does possess them. To avoid defaulting to permissions of everyone, we fetch
-// the member from HTTP if it is missing in the guild's members list.
+// When a bot's command is invoked in a large guild (e.g., 250k+ members), the method fails to
+// retrieve the member data of the author that invoked the command, and instead defaults to
+// `@everyone`'s permissions. This is because Discord does not send data of all members past 250,
+// resulting in the problem to meet permissions of a command even if the author does possess them.
+// To avoid defaulting to permissions of everyone, we fetch the member from HTTP if it is missing
+// in the guild's members list.
 #[cfg(feature = "cache")]
 fn permissions_in(
     ctx: &Context,
@@ -33,13 +29,12 @@ fn permissions_in(
     member: &Member,
     roles: &HashMap<RoleId, Role>,
 ) -> Permissions {
-    if ctx.cache.guild_field(guild_id, |guild| member.user.id == guild.owner_id) == Some(true) {
+    let guild = ctx.cache.guild(guild_id);
+    if guild.as_ref().map(|guild| member.user.id == guild.owner_id) == Some(true) {
         return Permissions::all();
     }
 
-    let everyone = if let Some(everyone) = roles.get(&RoleId(guild_id.0)) {
-        everyone
-    } else {
+    let Some(everyone) = roles.get(&RoleId::new(guild_id.get())) else {
         tracing::error!("@everyone role is missing in guild {}", guild_id);
 
         return Permissions::empty();
@@ -59,24 +54,12 @@ fn permissions_in(
         return Permissions::all();
     }
 
-    if let Some(Some(Channel::Guild(channel))) =
-        ctx.cache.guild_field(guild_id, |guild| guild.channels.get(&channel_id).cloned())
-    {
-        if channel.kind == ChannelType::Text {
-            permissions &= !(Permissions::CONNECT
-                | Permissions::SPEAK
-                | Permissions::MUTE_MEMBERS
-                | Permissions::DEAFEN_MEMBERS
-                | Permissions::MOVE_MEMBERS
-                | Permissions::USE_VAD
-                | Permissions::STREAM);
-        }
-
+    if let Some(channel) = guild.and_then(|guild| guild.channels.get(&channel_id).cloned()) {
         let mut data = Vec::with_capacity(member.roles.len());
 
         for overwrite in &channel.permission_overwrites {
             if let PermissionOverwriteType::Role(role) = overwrite.kind {
-                if role.0 != guild_id.0 && !member.roles.contains(&role) {
+                if role.get() != guild_id.get() && !member.roles.contains(&role) {
                     continue;
                 }
 
@@ -103,29 +86,8 @@ fn permissions_in(
         tracing::warn!("Guild {} does not contain channel {}", guild_id, channel_id);
     }
 
-    if channel_id.0 == guild_id.0 {
+    if channel_id.get() == guild_id.get() {
         permissions |= Permissions::VIEW_CHANNEL;
-    }
-
-    // No SEND_MESSAGES => no message-sending-related actions
-    // If the member does not have the `SEND_MESSAGES` permission, then
-    // throw out message-able permissions.
-    if !permissions.contains(Permissions::SEND_MESSAGES) {
-        permissions &= !(Permissions::SEND_TTS_MESSAGES
-            | Permissions::MENTION_EVERYONE
-            | Permissions::EMBED_LINKS
-            | Permissions::ATTACH_FILES);
-    }
-
-    // If the permission does not have the `VIEW_CHANNEL` permission, then
-    // throw out actionable permissions.
-    if !permissions.contains(Permissions::VIEW_CHANNEL) {
-        permissions &= !(Permissions::KICK_MEMBERS
-            | Permissions::BAN_MEMBERS
-            | Permissions::ADMINISTRATOR
-            | Permissions::MANAGE_GUILD
-            | Permissions::CHANGE_NICKNAME
-            | Permissions::MANAGE_NICKNAMES);
     }
 
     permissions
@@ -140,9 +102,9 @@ fn to_lowercase<'a>(config: &Configuration, s: &'a str) -> Cow<'a, str> {
     }
 }
 
-/// Parse a mention in the message that is of either the direct (`<@id>`) or nickname (`<@!id>`) syntax,
-/// and compare the encoded `id` with the id from [`Configuration::on_mention`] for a match.
-/// Returns `Some(<id>)` on success, [`None`] otherwise.
+/// Parse a mention in the message that is of either the direct (`<@id>`) or nickname (`<@!id>`)
+/// syntax, and compare the encoded `id` with the id from [`Configuration::on_mention`] for a
+/// match. Returns `Some(<id>)` on success, [`None`] otherwise.
 pub fn mention<'a>(stream: &mut Stream<'a>, config: &Configuration) -> Option<&'a str> {
     let on_mention = config.on_mention.as_deref()?;
 
@@ -173,7 +135,6 @@ pub fn mention<'a>(stream: &mut Stream<'a>, config: &Configuration) -> Option<&'
     }
 }
 
-#[allow(clippy::needless_lifetimes)] // Clippy and the compiler disagree
 async fn find_prefix<'a>(
     ctx: &Context,
     msg: &Message,
@@ -183,12 +144,7 @@ async fn find_prefix<'a>(
     let try_match = |prefix: &str| {
         let peeked = stream.peek_for_char(prefix.chars().count());
         let peeked = to_lowercase(config, peeked);
-
-        if prefix == peeked {
-            Some(peeked)
-        } else {
-            None
-        }
+        (prefix == peeked).then_some(peeked)
     };
 
     for f in &config.dynamic_prefixes {
@@ -260,21 +216,12 @@ async fn check_discrepancy(
     #[cfg(feature = "cache")]
     {
         if let Some(guild_id) = msg.guild_id {
-            let member = match ctx
-                .cache
-                .guild_field(guild_id, |guild| guild.members.get(&msg.author.id).cloned())
-            {
-                Some(Some(member)) => member,
-                // Member not found.
-                Some(None) => match ctx.http.get_member(guild_id.0, msg.author.id.0).await {
-                    Ok(member) => member,
-                    Err(_) => return Ok(()),
-                },
-                // Guild not found.
+            let roles = match ctx.cache.guild(guild_id) {
+                Some(guild) => guild.roles.clone(),
                 None => return Ok(()),
             };
-            #[allow(clippy::unwrap_used)] // Allowing unwrap because should always return Some()
-            let roles = ctx.cache.guild_field(guild_id, |guild| guild.roles.clone()).unwrap();
+
+            let Ok(member) = guild_id.member(ctx, msg.author.id).await else { return Ok(()) };
             let perms = permissions_in(ctx, guild_id, msg.channel_id, &member, &roles);
 
             if !(perms.contains(*options.required_permissions())
@@ -293,7 +240,7 @@ async fn check_discrepancy(
 }
 
 fn try_parse<M: ParseMap>(
-    stream: &mut Stream<'_>,
+    stream: &Stream<'_>,
     map: &M,
     by_space: bool,
     f: impl Fn(&str) -> String,
@@ -469,11 +416,12 @@ fn is_unrecognised<T>(res: &Result<T, ParseError>) -> bool {
 ///
 /// The "command" may be:
 /// 1. A *help command* that provides a friendly browsing interface of all groups and commands,
-/// explaining what each of them are, how they are laid out and how to invoke them.
-/// There can only one help command registered, but might have many names defined for invocation of itself.
+///    explaining what each of them are, how they are laid out and how to invoke them. There can
+///    only one help command registered, but might have many names defined for invocation of itself.
 ///
-/// 2. A command defined under another command or a group, which may also belong to another group and so on.
-/// To invoke this command, all names and prefixes of its parent commands and groups must be specified before it.
+/// 2. A command defined under another command or a group, which may also belong to another group
+///    and so on. To invoke this command, all names and prefixes of its parent commands and groups
+///    must be specified before it.
 pub async fn command(
     ctx: &Context,
     msg: &Message,
@@ -497,7 +445,7 @@ pub async fn command(
         }
     }
 
-    let mut last = Err(ParseError::UnrecognisedCommand(None));
+    let mut last = Err::<Invoke, _>(ParseError::UnrecognisedCommand(None));
     let mut is_prefixless = false;
 
     for (group, map) in groups {
@@ -514,22 +462,21 @@ pub async fn command(
                     last = res;
                 }
             },
-            #[allow(clippy::items_after_statements)]
             Map::Prefixless(subgroups, commands) => {
-                is_prefixless = true;
-
                 fn command_name_if_recognised(res: &Result<Invoke, ParseError>) -> Option<&str> {
                     match res {
                         Ok(Invoke::Command {
                             command, ..
                         }) => Some(command.options.names[0]),
-                        Ok(Invoke::Help(name)) => Some(name), /* unreachable, but fallback just in case */
+                        Ok(Invoke::Help(name)) => Some(name), // unreachable; fallback just in case
                         Err(ParseError::UnrecognisedCommand(_)) => None,
                         Err(ParseError::Dispatch {
                             command_name, ..
                         }) => Some(command_name),
                     }
                 }
+
+                is_prefixless = true;
 
                 let res = handle_group(stream, ctx, msg, config, subgroups).await;
 

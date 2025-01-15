@@ -48,8 +48,8 @@ pub(crate) enum Bucket {
     Channel(TicketCounter),
     /// The bucket will collect tickets per category.
     ///
-    /// This requires the cache, as messages do not contain their channel's
-    /// category.
+    /// This requires the cache, as messages do not contain their channel's category and retrieving
+    /// channel data via HTTP is costly.
     #[cfg(feature = "cache")]
     Category(TicketCounter),
 }
@@ -59,21 +59,20 @@ impl Bucket {
     pub async fn take(&mut self, ctx: &Context, msg: &Message) -> Option<RateLimitInfo> {
         match self {
             Self::Global(counter) => counter.take(ctx, msg, 0).await,
-            Self::User(counter) => counter.take(ctx, msg, msg.author.id.0).await,
+            Self::User(counter) => counter.take(ctx, msg, msg.author.id.get()).await,
             Self::Guild(counter) => {
                 if let Some(guild_id) = msg.guild_id {
-                    counter.take(ctx, msg, guild_id.0).await
+                    counter.take(ctx, msg, guild_id.get()).await
                 } else {
                     None
                 }
             },
-            Self::Channel(counter) => counter.take(ctx, msg, msg.channel_id.0).await,
-            // This requires the cache, as messages do not contain their channel's
-            // category.
+            Self::Channel(counter) => counter.take(ctx, msg, msg.channel_id.get()).await,
+            // This requires the cache, as messages do not contain their channel's category.
             #[cfg(feature = "cache")]
             Self::Category(counter) => {
-                if let Some(category_id) = msg.category_id(ctx) {
-                    counter.take(ctx, msg, category_id.0).await
+                if let Some(category_id) = msg.category_id(ctx).await {
+                    counter.take(ctx, msg, category_id.get()).await
                 } else {
                     None
                 }
@@ -85,27 +84,25 @@ impl Bucket {
     pub async fn give(&mut self, ctx: &Context, msg: &Message) {
         match self {
             Self::Global(counter) => counter.give(ctx, msg, 0).await,
-            Self::User(counter) => counter.give(ctx, msg, msg.author.id.0).await,
+            Self::User(counter) => counter.give(ctx, msg, msg.author.id.get()).await,
             Self::Guild(counter) => {
                 if let Some(guild_id) = msg.guild_id {
-                    counter.give(ctx, msg, guild_id.0).await;
+                    counter.give(ctx, msg, guild_id.get()).await;
                 }
             },
-            Self::Channel(counter) => counter.give(ctx, msg, msg.channel_id.0).await,
-            // This requires the cache, as messages do not contain their channel's
-            // category.
+            Self::Channel(counter) => counter.give(ctx, msg, msg.channel_id.get()).await,
+            // This requires the cache, as messages do not contain their channel's category.
             #[cfg(feature = "cache")]
             Self::Category(counter) => {
-                if let Some(category_id) = msg.category_id(ctx) {
-                    counter.give(ctx, msg, category_id.0).await;
+                if let Some(category_id) = msg.category_id(ctx).await {
+                    counter.give(ctx, msg, category_id.get()).await;
                 }
             },
         }
     }
 }
 
-/// Keeps track of who owns how many tickets and when they accessed the last
-/// time.
+/// Keeps track of who owns how many tickets and when they accessed the last time.
 pub(crate) struct TicketCounter {
     pub ratelimit: Ratelimit,
     pub tickets_for: HashMap<u64, UnitRatelimit>,
@@ -123,8 +120,8 @@ pub struct RateLimitInfo {
     pub active_delays: u32,
     /// Maximum delays that this target can invoke.
     pub max_delays: u32,
-    /// Whether this is the first time the rate limit info has been
-    /// returned for this target without the rate limit to elapse.
+    /// Whether this is the first time the rate limit info has been returned for this target
+    /// without the rate limit to elapse.
     pub is_first_try: bool,
     /// How the command invocation has been treated by the framework.
     pub action: RateLimitAction,
@@ -144,37 +141,37 @@ pub enum RateLimitAction {
 impl RateLimitInfo {
     /// Gets the duration of the rate limit in seconds.
     #[inline]
+    #[must_use]
     pub fn as_secs(&self) -> u64 {
         self.rate_limit.as_secs()
     }
 
     /// Gets the duration of the rate limit in milliseconds.
     #[inline]
+    #[must_use]
     pub fn as_millis(&self) -> u128 {
         self.rate_limit.as_millis()
     }
 
     /// Gets the duration of the rate limit in microseconds.
     #[inline]
+    #[must_use]
     pub fn as_micros(&self) -> u128 {
         self.rate_limit.as_micros()
     }
 }
 
 impl TicketCounter {
-    /// Tries to check whether the invocation is permitted by the ticket counter
-    /// and if a ticket can be taken; it does not return a
-    /// a ticket but a duration until a ticket can be taken.
+    /// Tries to check whether the invocation is permitted by the ticket counter and if a ticket
+    /// can be taken; it does not return a a ticket but a duration until a ticket can be taken.
     ///
-    /// The duration will be wrapped in an action for the caller to perform
-    /// if wanted. This may inform them to directly cancel trying to take a ticket
-    /// or delay the take until later.
+    /// The duration will be wrapped in an action for the caller to perform if wanted. This may
+    /// inform them to directly cancel trying to take a ticket or delay the take until later.
     ///
-    /// However there is no contract: It does not matter what
-    /// the caller ends up doing, receiving some action eventually means
-    /// no ticket can be taken and the duration must elapse.
+    /// However there is no contract: It does not matter what the caller ends up doing, receiving
+    /// some action eventually means no ticket can be taken and the duration must elapse.
     pub async fn take(&mut self, ctx: &Context, msg: &Message, id: u64) -> Option<RateLimitInfo> {
-        if let Some(ref check) = self.check {
+        if let Some(check) = &self.check {
             if !(check)(ctx, msg).await {
                 return None;
             }
@@ -190,8 +187,7 @@ impl TicketCounter {
         let ticket_owner = tickets_for.entry(id).or_insert_with(|| UnitRatelimit::new(now));
 
         // Check if too many tickets have been taken already.
-        // If all tickets are exhausted, return the needed delay
-        // for this invocation.
+        // If all tickets are exhausted, return the needed delay for this invocation.
         if let Some((timespan, limit)) = ratelimit.limit {
             if (ticket_owner.tickets + 1) > limit {
                 if let Some(ratelimit) =
@@ -237,10 +233,8 @@ impl TicketCounter {
             }
         }
 
-        // Check if `ratelimit.delay`-time passed between the last and
-        // the current invocation
-        // If the time did not pass, return the needed delay for this
-        // invocation.
+        // Check if `ratelimit.delay`-time passed between the last and the current invocation
+        // If the time did not pass, return the needed delay for this invocation.
         if let Some(ratelimit) =
             ticket_owner.last_time.and_then(|x| (x + ratelimit.delay).checked_duration_since(now))
         {
@@ -285,12 +279,11 @@ impl TicketCounter {
         None
     }
 
-    /// Reverts the last ticket step performed by returning a ticket for the
-    /// matching ticket holder.
-    /// Only call this if the mutable owner already took a ticket in this
-    /// atomic execution of calling `take` and `give`.
+    /// Reverts the last ticket step performed by returning a ticket for the matching ticket
+    /// holder. Only call this if the mutable owner already took a ticket in this atomic execution
+    /// of calling `take` and `give`.
     pub async fn give(&mut self, ctx: &Context, msg: &Message, id: u64) {
-        if let Some(ref check) = self.check {
+        if let Some(check) = &self.check {
             if !(check)(ctx, msg).await {
                 return;
             }
@@ -304,20 +297,16 @@ impl TicketCounter {
 
             let delay = self.ratelimit.delay;
             // Subtract one step of time that would have to pass.
-            // This tries to bypass a problem of keeping track of when tickets
-            // were taken.
-            // When a ticket is taken, the bucket sets `last_time`, by
-            // subtracting the delay, once a ticket is allowed to be
-            // taken.
-            // If the value is set to `None` this could possibly reset the
-            // bucket.
+            // This tries to bypass a problem of keeping track of when tickets were taken.
+            // When a ticket is taken, the bucket sets `last_time`, by subtracting the delay, once
+            // a ticket is allowed to be taken.
+            // If the value is set to `None` this could possibly reset the bucket.
             ticket_owner.last_time = ticket_owner.last_time.and_then(|i| i.checked_sub(delay));
         }
     }
 }
 
-/// An error struct that can be returned from a command to set the
-/// bucket one step back.
+/// An error struct that can be returned from a command to set the bucket one step back.
 #[derive(Debug)]
 pub struct RevertBucket;
 
@@ -342,8 +331,7 @@ pub enum LimitedFor {
     Channel,
     /// The bucket will collect tickets per category.
     ///
-    /// This requires the cache, as messages do not contain their channel's
-    /// category.
+    /// This requires the cache, as messages do not contain their channel's category.
     #[cfg(feature = "cache")]
     Category,
 }
@@ -381,6 +369,7 @@ impl Default for BucketBuilder {
 
 impl BucketBuilder {
     /// A bucket collecting tickets per command invocation.
+    #[must_use]
     pub fn new_global() -> Self {
         Self {
             limited_for: LimitedFor::Global,
@@ -389,6 +378,7 @@ impl BucketBuilder {
     }
 
     /// A bucket collecting tickets per user.
+    #[must_use]
     pub fn new_user() -> Self {
         Self {
             limited_for: LimitedFor::User,
@@ -397,6 +387,7 @@ impl BucketBuilder {
     }
 
     /// A bucket collecting tickets per guild.
+    #[must_use]
     pub fn new_guild() -> Self {
         Self {
             limited_for: LimitedFor::Guild,
@@ -405,6 +396,7 @@ impl BucketBuilder {
     }
 
     /// A bucket collecting tickets per channel.
+    #[must_use]
     pub fn new_channel() -> Self {
         Self {
             limited_for: LimitedFor::Channel,
@@ -414,9 +406,9 @@ impl BucketBuilder {
 
     /// A bucket collecting tickets per channel category.
     ///
-    /// This requires the cache, as messages do not contain their channel's
-    /// category.
+    /// This requires the cache, as messages do not contain their channel's category.
     #[cfg(feature = "cache")]
+    #[must_use]
     pub fn new_category() -> Self {
         Self {
             limited_for: LimitedFor::Category,
@@ -428,9 +420,9 @@ impl BucketBuilder {
     ///
     /// Expressed in seconds.
     #[inline]
-    pub fn delay(&mut self, secs: u64) -> &mut Self {
+    #[must_use]
+    pub fn delay(mut self, secs: u64) -> Self {
         self.delay = Duration::from_secs(secs);
-
         self
     }
 
@@ -438,54 +430,115 @@ impl BucketBuilder {
     ///
     /// Expressed in seconds.
     #[inline]
-    pub fn time_span(&mut self, secs: u64) -> &mut Self {
+    #[must_use]
+    pub fn time_span(mut self, secs: u64) -> Self {
         self.time_span = Duration::from_secs(secs);
-
         self
     }
 
     /// Number of invocations allowed per [`Self::time_span`].
     #[inline]
-    pub fn limit(&mut self, n: u32) -> &mut Self {
+    #[must_use]
+    pub fn limit(mut self, n: u32) -> Self {
         self.limit = n;
-
         self
     }
 
-    /// Middleware confirming (or denying) that the bucket is eligible to apply.
-    /// For instance, to limit the bucket to just one user.
+    /// Middleware confirming (or denying) that the bucket is eligible to apply. For instance, to
+    /// limit the bucket to just one user.
     #[inline]
-    pub fn check(&mut self, check: Check) -> &mut Self {
+    #[must_use]
+    pub fn check(mut self, check: Check) -> Self {
         self.check = Some(check);
-
         self
     }
 
-    /// This function will be called once a user's invocation has been delayed.
+    /// This function is called when a user's command invocation is delayed when:
+    /// 1. `await_ratelimits` is set to a non zero value (the default is 0).
+    /// 2. user's message rests comfortably within `await_ratelimits` (ex. if you set it to 1 then
+    ///    it will only respond once when the delay is first exceeded).
+    ///
+    /// For convenience, this function will automatically raise `await_ratelimits` to at least 1.
+    ///
+    /// You can use this to, for example, send a custom response when someone exceeds the amount of
+    /// commands they're allowed to make.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    /// use serenity::framework::standard::macros::{command, group};
+    /// use serenity::framework::standard::{BucketBuilder, Configuration, CommandResult, StandardFramework};
+    /// use serenity::model::channel::Message;
+    /// use serenity::prelude::*;
+    ///
+    /// #[command]
+    /// #[bucket = "example_bucket"]
+    /// async fn example_command(ctx: &Context, msg: &Message) -> CommandResult {
+    ///     msg.reply(ctx, "Example message, You can only repeat this once every 10 seconds").await?;
+    ///
+    ///     Ok(())
+    /// }
+    ///
+    /// async fn example_overuse_response(ctx: &Context, msg: &Message) {
+    ///     msg.reply(ctx, "I told you that you can't call this command less than every 10 seconds!").await.unwrap();
+    /// }
+    ///
+    /// #[group]
+    /// #[commands(example_command)]
+    /// struct General;
+    ///
+    /// let token = std::env::var("DISCORD_TOKEN")?;
+    ///
+    /// let framework = StandardFramework::new()
+    ///     .bucket("example_bucket", BucketBuilder::default()
+    ///         // We initialise the bucket with the function we want to run
+    ///         .delay_action(|ctx, msg| {
+    ///             Box::pin(example_overuse_response(ctx, msg))
+    ///         })
+    ///         .delay(10) // We set the delay to 10 seconds
+    ///         .await_ratelimits(1) // We override the default behavior so that the function actually gets run
+    ///     )
+    ///     .await
+    ///     .group(&GENERAL_GROUP);
+    ///
+    /// framework.configure(Configuration::new().prefix("~"));
+    ///
+    /// let mut client = Client::builder(&token, GatewayIntents::default())
+    /// .framework(framework)
+    /// .await?;
+    ///
+    /// client.start().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     #[inline]
-    pub fn delay_action(&mut self, action: DelayHook) -> &mut Self {
+    #[must_use]
+    pub fn delay_action(mut self, action: DelayHook) -> Self {
         self.delay_action = Some(action);
+        if self.await_ratelimits == 0 {
+            self.await_ratelimits = 1;
+        }
 
         self
     }
 
     /// Limit the bucket for a specific type of `target`.
     #[inline]
-    pub fn limit_for(&mut self, target: LimitedFor) -> &mut Self {
+    #[must_use]
+    pub fn limit_for(mut self, target: LimitedFor) -> Self {
         self.limited_for = target;
-
         self
     }
 
-    /// If this is set to an `amount` greater than `0`, the invocation of the
-    /// command will be delayed `amount` times instead of stopping command
-    /// dispatch.
+    /// If this is set to an `amount` greater than `0`, the invocation of the command will be
+    /// delayed `amount` times instead of stopping command dispatch.
     ///
     /// By default this value is `0` and rate limits will cancel instead.
     #[inline]
-    pub fn await_ratelimits(&mut self, amount: u32) -> &mut Self {
+    #[must_use]
+    pub fn await_ratelimits(mut self, amount: u32) -> Self {
         self.await_ratelimits = amount;
-
         self
     }
 
@@ -507,8 +560,7 @@ impl BucketBuilder {
             LimitedFor::User => Bucket::User(counter),
             LimitedFor::Guild => Bucket::Guild(counter),
             LimitedFor::Channel => Bucket::Channel(counter),
-            // This requires the cache, as messages do not contain their channel's
-            // category.
+            // This requires the cache, as messages do not contain their channel's category.
             #[cfg(feature = "cache")]
             LimitedFor::Category => Bucket::Category(counter),
             LimitedFor::Global => Bucket::Global(counter),

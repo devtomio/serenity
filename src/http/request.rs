@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::fmt::Write;
 
 use reqwest::header::{
     HeaderMap as Headers,
@@ -12,159 +12,137 @@ use reqwest::{Client, RequestBuilder as ReqwestRequestBuilder, Url};
 use tracing::instrument;
 
 use super::multipart::Multipart;
-use super::routing::RouteInfo;
-use super::HttpError;
+use super::routing::Route;
+use super::{HttpError, LightMethod};
 use crate::constants;
 use crate::internal::prelude::*;
 
-pub struct RequestBuilder<'a> {
-    body: Option<&'a [u8]>,
-    multipart: Option<Multipart<'a>>,
-    headers: Option<Headers>,
-    route: RouteInfo<'a>,
+#[deprecated = "use Request directly now"]
+pub type RequestBuilder<'a> = Request<'a>;
+
+#[derive(Clone, Debug)]
+#[must_use]
+pub struct Request<'a> {
+    pub(super) body: Option<Vec<u8>>,
+    pub(super) multipart: Option<Multipart>,
+    pub(super) headers: Option<Headers>,
+    pub(super) method: LightMethod,
+    pub(super) route: Route<'a>,
+    pub(super) params: Option<Vec<(&'static str, String)>>,
 }
 
-impl<'a> RequestBuilder<'a> {
-    pub fn new(route_info: RouteInfo<'a>) -> Self {
+impl<'a> Request<'a> {
+    pub const fn new(route: Route<'a>, method: LightMethod) -> Self {
         Self {
             body: None,
             multipart: None,
             headers: None,
-            route: route_info,
+            method,
+            route,
+            params: None,
         }
     }
 
-    pub fn build(self) -> Request<'a> {
-        Request::new(self)
-    }
-
-    pub fn body(&mut self, body: Option<&'a [u8]>) -> &mut Self {
+    pub fn body(mut self, body: Option<Vec<u8>>) -> Self {
         self.body = body;
-
         self
     }
 
-    pub fn multipart(&mut self, multipart: Option<Multipart<'a>>) -> &mut Self {
+    pub fn multipart(mut self, multipart: Option<Multipart>) -> Self {
         self.multipart = multipart;
-
         self
     }
 
-    pub fn headers(&mut self, headers: Option<Headers>) -> &mut Self {
+    pub fn headers(mut self, headers: Option<Headers>) -> Self {
         self.headers = headers;
-
         self
     }
 
-    pub fn route(&mut self, route_info: RouteInfo<'a>) -> &mut Self {
-        self.route = route_info;
-
+    pub fn params(mut self, params: Option<Vec<(&'static str, String)>>) -> Self {
+        self.params = params;
         self
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Request<'a> {
-    pub(super) body: Option<&'a [u8]>,
-    pub(super) multipart: Option<Multipart<'a>>,
-    pub(super) headers: Option<Headers>,
-    pub(super) route: RouteInfo<'a>,
-}
-
-impl<'a> Request<'a> {
-    pub fn new(builder: RequestBuilder<'a>) -> Self {
-        let RequestBuilder {
-            body,
-            multipart,
-            headers,
-            route,
-        } = builder;
-
-        Self {
-            body,
-            multipart,
-            headers,
-            route,
-        }
     }
 
     #[instrument(skip(token))]
-    pub async fn build(
-        &mut self,
+    pub fn build(
+        self,
         client: &Client,
         token: &str,
-        proxy: Option<&Url>,
+        proxy: Option<&str>,
     ) -> Result<ReqwestRequestBuilder> {
-        let Request {
-            body,
-            ref mut multipart,
-            headers: ref request_headers,
-            route: ref route_info,
-        } = *self;
-
-        let (method, _, mut path) = route_info.deconstruct();
+        let mut path = self.route.path().to_string();
 
         if let Some(proxy) = proxy {
-            path = Cow::Owned(path.to_mut().replace("https://discord.com/", proxy.as_str()));
+            // trim_end_matches to prevent double slashes after the domain
+            path = path.replace("https://discord.com", proxy.trim_end_matches('/'));
         }
 
-        let mut builder =
-            client.request(method.reqwest_method(), Url::parse(&path).map_err(HttpError::Url)?);
-
-        if let Some(bytes) = body {
-            builder = builder.body(Vec::from(bytes));
+        if let Some(params) = self.params {
+            path += "?";
+            for (param, value) in params {
+                write!(path, "&{param}={value}").unwrap();
+            }
         }
 
-        let mut headers = Headers::with_capacity(4);
+        let mut builder = client
+            .request(self.method.reqwest_method(), Url::parse(&path).map_err(HttpError::Url)?);
+
+        let mut headers = self.headers.unwrap_or_default();
         headers.insert(USER_AGENT, HeaderValue::from_static(constants::USER_AGENT));
         headers
             .insert(AUTHORIZATION, HeaderValue::from_str(token).map_err(HttpError::InvalidHeader)?);
 
-        // Discord will return a 400: Bad Request response if we set the content type header,
-        // but don't give a body.
-        if self.body.is_some() {
+        if let Some(multipart) = self.multipart {
+            // Setting multipart adds the content-length header.
+            builder = builder.multipart(multipart.build_form()?);
+        } else if let Some(bytes) = self.body {
+            headers.insert(CONTENT_LENGTH, bytes.len().into());
             headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        }
-
-        if let Some(multipart) = multipart {
-            // Setting multipart adds the content-length header
-            builder = builder.multipart(multipart.build_form(client).await?);
+            builder = builder.body(bytes);
         } else {
-            headers.insert(
-                CONTENT_LENGTH,
-                HeaderValue::from_str(&body.unwrap_or(&Vec::new()).len().to_string())
-                    .map_err(HttpError::InvalidHeader)?,
-            );
-        }
-
-        if let Some(ref request_headers) = request_headers {
-            headers.extend(request_headers.clone());
+            headers.insert(CONTENT_LENGTH, 0.into()); // Can we skip this?
         }
 
         Ok(builder.headers(headers))
     }
 
-    pub fn body_ref(&self) -> &Option<&'a [u8]> {
-        &self.body
+    #[must_use]
+    pub fn body_ref(&self) -> Option<&[u8]> {
+        self.body.as_deref()
     }
 
-    pub fn body_mut(&mut self) -> &mut Option<&'a [u8]> {
-        &mut self.body
+    #[must_use]
+    pub fn body_mut(&mut self) -> Option<&mut [u8]> {
+        self.body.as_deref_mut()
     }
 
+    #[must_use]
     pub fn headers_ref(&self) -> &Option<Headers> {
         &self.headers
     }
 
+    #[must_use]
     pub fn headers_mut(&mut self) -> &mut Option<Headers> {
         &mut self.headers
     }
 
-    pub fn route_ref(&self) -> &RouteInfo<'_> {
+    #[must_use]
+    pub fn method_ref(&self) -> &LightMethod {
+        &self.method
+    }
+
+    #[must_use]
+    pub fn route_ref(&self) -> &Route<'_> {
         &self.route
     }
 
-    pub fn route_mut(&mut self) -> &mut RouteInfo<'a> {
-        &mut self.route
+    #[must_use]
+    pub fn params_ref(&self) -> Option<&[(&'static str, String)]> {
+        self.params.as_deref()
+    }
+
+    #[must_use]
+    pub fn params_mut(&mut self) -> Option<&mut [(&'static str, String)]> {
+        self.params.as_deref_mut()
     }
 }

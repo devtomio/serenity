@@ -24,11 +24,9 @@ impl<E> From<E> for Error<E> {
 
 impl<E: fmt::Display> fmt::Display for Error<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use self::Error::*;
-
-        match *self {
-            Eos => f.write_str(r#"ArgError("end of string")"#),
-            Parse(ref e) => write!(f, "ArgError(\"{}\")", e),
+        match self {
+            Self::Eos => f.write_str(r#"ArgError("end of string")"#),
+            Self::Parse(e) => write!(f, "ArgError(\"{e}\")"),
         }
     }
 }
@@ -48,8 +46,8 @@ impl Delimiter {
     #[inline]
     fn to_str(&self) -> Cow<'_, str> {
         match self {
-            Delimiter::Single(c) => Cow::Owned(c.to_string()),
-            Delimiter::Multiple(s) => Cow::Borrowed(s),
+            Self::Single(c) => Cow::Owned(c.to_string()),
+            Self::Multiple(s) => Cow::Borrowed(s),
         }
     }
 }
@@ -82,14 +80,14 @@ impl<'a> From<&'a str> for Delimiter {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 enum TokenKind {
     Argument,
     QuotedArgument,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Token {
     kind: TokenKind,
     span: (usize, usize),
@@ -129,8 +127,8 @@ impl QuoteKind {
 
     fn is_ending_quote(self, c: char) -> bool {
         match self {
-            QuoteKind::Ascii => c == '"',
-            QuoteKind::Apple => c == '\u{201D}',
+            Self::Ascii => c == '"',
+            Self::Apple => c == '\u{201D}',
         }
     }
 }
@@ -144,9 +142,14 @@ fn lex(stream: &mut Stream<'_>, delims: &[Cow<'_, str>]) -> Option<Token> {
     if let Some(kind) = QuoteKind::new(stream.current_char()?) {
         stream.next_char();
 
-        stream.take_until_char(|c| kind.is_ending_quote(c));
+        let mut prev_was_backslash = false;
+        stream.take_until_char(|c| {
+            let result = kind.is_ending_quote(c) && !prev_was_backslash;
+            prev_was_backslash = c == '\\';
+            result
+        });
 
-        let is_quote = stream.current_char().map_or(false, |c| kind.is_ending_quote(c));
+        let is_quote = stream.current_char().is_some_and(|c| kind.is_ending_quote(c));
         stream.next_char();
 
         let end = stream.offset();
@@ -213,7 +216,7 @@ fn remove_quotes(s: &str) -> &str {
     strip(s, '\u{201C}', '\u{201D}').unwrap_or(s)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum State {
     None,
     Quoted,
@@ -225,7 +228,8 @@ enum State {
 
 /// A utility struct for handling "arguments" of a command.
 ///
-/// An "argument" is a part of the message up that ends at one of the specified delimiters, or the end of the message.
+/// An "argument" is a part of the message up that ends at one of the specified delimiters, or the
+/// end of the message.
 ///
 /// # Example
 ///
@@ -287,8 +291,9 @@ enum State {
 /// assert_eq!(res, "42");
 /// ```
 ///
-/// Hmm, taking a glance at the prior example, it seems we have an issue with reading the same argument over and over.
-/// Is there a more sensible solution than rewinding...? Actually, there is! The [`Self::current`] and [`Self::parse`] methods:
+/// Hmm, taking a glance at the prior example, it seems we have an issue with reading the same
+/// argument over and over. Is there a more sensible solution than rewinding...? Actually, there is!
+/// The [`Self::current`] and [`Self::parse`] methods:
 ///
 /// ```rust
 /// use serenity::framework::standard::{Args, Delimiter};
@@ -343,6 +348,7 @@ impl Args {
     /// // We shall not see `the quick brown` again.
     /// assert_eq!(args.rest(), "fox jumps over the lazy");
     /// ```
+    #[must_use]
     pub fn new(message: &str, possible_delimiters: &[Delimiter]) -> Self {
         let delims = possible_delimiters
             .iter()
@@ -353,12 +359,17 @@ impl Args {
             .map(Delimiter::to_str)
             .collect::<Vec<_>>();
 
-        let args = if delims.is_empty() && !message.is_empty() {
-            let kind =
-                if is_quoted(message) { TokenKind::QuotedArgument } else { TokenKind::Argument };
+        let args = if delims.is_empty() {
+            let msg = message.trim();
+            let kind = if is_quoted(msg) { TokenKind::QuotedArgument } else { TokenKind::Argument };
 
-            // If there are no delimiters, then the only possible argument is the whole message.
-            vec![Token::new(kind, 0, message.len())]
+            if msg.is_empty() {
+                Vec::new()
+            } else {
+                // If there are no delimiters, then the only possible argument is the whole
+                // message.
+                vec![Token::new(kind, 0, message.len())]
+            }
         } else {
             let mut args = Vec::new();
             let mut stream = Stream::new(message);
@@ -395,8 +406,7 @@ impl Args {
         &self.message[start..end]
     }
 
-    /// Move to the next argument.
-    /// This increments the offset pointer.
+    /// Move to the next argument. This increments the offset pointer.
     ///
     /// Does nothing if the message is empty.
     pub fn advance(&mut self) -> &mut Self {
@@ -409,8 +419,7 @@ impl Args {
         self
     }
 
-    /// Go one step behind.
-    /// This decrements the offset pointer.
+    /// Go one step behind. This decrements the offset pointer.
     ///
     /// Does nothing if the offset pointer is `0`.
     #[inline]
@@ -486,6 +495,7 @@ impl Args {
     /// assert_eq!(args.current(), None);
     /// ```
     #[inline]
+    #[must_use]
     pub fn current(&self) -> Option<&str> {
         if self.is_empty() {
             return None;
@@ -541,8 +551,8 @@ impl Args {
 
     /// Remove quotations surrounding all arguments.
     ///
-    /// Note that only the quotes of the argument are taken into account.
-    /// The quotes in the message are preserved.
+    /// Note that only the quotes of the argument are taken into account. The quotes in the message
+    /// are preserved.
     ///
     /// # Examples
     ///
@@ -594,7 +604,8 @@ impl Args {
 
     /// Parse the current argument.
     ///
-    /// Modifications of [`Self::trimmed`] and [`Self::quoted`] are also applied if they were called.
+    /// Modifications of [`Self::trimmed`] and [`Self::quoted`] are also applied if they were
+    /// called.
     ///
     /// # Examples
     ///
@@ -618,8 +629,8 @@ impl Args {
 
     /// Parse the current argument and advance.
     ///
-    /// Shorthand for calling [`Self::parse`], storing the result,
-    /// calling [`Self::advance`] and returning the result.
+    /// Shorthand for calling [`Self::parse`], storing the result, calling [`Self::advance`] and
+    /// returning the result.
     ///
     /// # Examples
     ///
@@ -671,10 +682,11 @@ impl Args {
         Ok(p)
     }
 
-    /// By starting from the current offset, iterate over
-    /// any available arguments until there are none.
+    /// By starting from the current offset, iterate over any available arguments until there are
+    /// none.
     ///
-    /// Modifications of [`Iter::trimmed`] and [`Iter::quoted`] are also applied to all arguments if they were called.
+    /// Modifications of [`Iter::trimmed`] and [`Iter::quoted`] are also applied to all arguments if
+    /// they were called.
     ///
     /// # Examples
     ///
@@ -718,6 +730,7 @@ impl Args {
     /// assert_eq!(protagonists, "Harry, Hermione, Ronald");
     /// ```
     #[inline]
+    #[must_use]
     pub fn raw(&self) -> RawArguments<'_> {
         RawArguments {
             tokens: &self.args,
@@ -740,20 +753,23 @@ impl Args {
     /// assert_eq!(&*horror_movies, &["Saw", "The Mist", "A Quiet Place"]);
     /// ```
     #[inline]
+    #[must_use]
     pub fn raw_quoted(&self) -> RawArguments<'_> {
         let mut raw = self.raw();
         raw.quoted = true;
         raw
     }
 
-    /// Search for any available argument that can be parsed, and remove it from the "arguments queue".
+    /// Search for any available argument that can be parsed, and remove it from the arguments
+    /// queue.
     ///
     /// # Note
     /// The removal is irreversible. And happens after the search *and* the parse were successful.
     ///
     /// # Note 2
-    /// "Arguments queue" is the list which contains all arguments that were deemed unique as defined by quotations and delimiters.
-    /// The 'removed' argument can be, likewise, still accessed via [`Self::message`].
+    /// "Arguments queue" is the list which contains all arguments that were deemed unique as
+    /// defined by quotations and delimiters. The 'removed' argument can be, likewise, still
+    /// accessed via [`Self::message`].
     ///
     /// # Examples
     ///
@@ -770,8 +786,6 @@ impl Args {
     /// # Errors
     ///
     /// Returns [`Error::Eos`] if no argument can be parsed.
-    ///
-    /// [`Error::Eos`]: Error::Eos
     pub fn find<T: FromStr>(&mut self) -> Result<T, T::Err> {
         if self.is_empty() {
             return Err(Error::Eos);
@@ -780,9 +794,7 @@ impl Args {
         let before = self.offset;
         self.restore();
 
-        let pos = if let Some(p) = self.iter::<T>().quoted().position(|res| res.is_ok()) {
-            p
-        } else {
+        let Some(pos) = self.iter::<T>().quoted().position(|res| res.is_ok()) else {
             self.offset = before;
             return Err(Error::Eos);
         };
@@ -817,8 +829,6 @@ impl Args {
     /// # Errors
     ///
     /// Returns [`Error::Eos`] if no argument can be parsed.
-    ///
-    /// [`Error::Eos`]: Error::Eos
     pub fn find_n<T: FromStr>(&mut self) -> Result<T, T::Err> {
         if self.is_empty() {
             return Err(Error::Eos);
@@ -827,9 +837,7 @@ impl Args {
         let before = self.offset;
         self.restore();
 
-        let pos = if let Some(p) = self.iter::<T>().quoted().position(|res| res.is_ok()) {
-            p
-        } else {
+        let Some(pos) = self.iter::<T>().quoted().position(|res| res.is_ok()) else {
             self.offset = before;
             return Err(Error::Eos);
         };
@@ -844,12 +852,14 @@ impl Args {
 
     /// Get the original, unmodified message passed to the command.
     #[inline]
+    #[must_use]
     pub fn message(&self) -> &str {
         &self.message
     }
 
     /// Starting from the offset, return the remainder of available arguments.
     #[inline]
+    #[must_use]
     pub fn rest(&self) -> &str {
         self.remains().unwrap_or_default()
     }
@@ -858,6 +868,7 @@ impl Args {
     ///
     /// Returns [`None`] if there are no remaining arguments.
     #[inline]
+    #[must_use]
     pub fn remains(&self) -> Option<&str> {
         if self.is_empty() {
             return None;
@@ -868,26 +879,28 @@ impl Args {
         Some(&self.message[start..])
     }
 
-    /// Return the full amount of recognised arguments.
-    /// The length of the "arguments queue".
+    /// Return the full amount of recognised arguments. The length of the "arguments queue".
     ///
     /// # Note
     ///
-    /// The value returned is to be assumed to stay static.
-    /// However, if [`Self::find`] was called previously, and was successful, then the value is subtracted by one.
+    /// The value returned is to be assumed to stay static. However, if [`Self::find`] was called
+    /// previously, and was successful, then the value is subtracted by one.
     #[inline]
+    #[must_use]
     pub fn len(&self) -> usize {
         self.args.len()
     }
 
     /// Assert that there are no more arguments left.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.offset >= self.len()
     }
 
     /// Return the amount of arguments still available.
     #[inline]
+    #[must_use]
     pub fn remaining(&self) -> usize {
         if self.is_empty() {
             return 0;
@@ -905,7 +918,7 @@ pub struct Iter<'a, T: FromStr> {
 }
 
 #[allow(clippy::missing_errors_doc)]
-impl<'a, T: FromStr> Iter<'a, T> {
+impl<T: FromStr> Iter<'_, T> {
     /// Retrieve the current argument.
     pub fn current(&mut self) -> Option<&str> {
         self.args.state = self.state;
@@ -943,7 +956,7 @@ impl<'a, T: FromStr> Iter<'a, T> {
     }
 }
 
-impl<'a, T: FromStr> Iterator for Iter<'a, T> {
+impl<T: FromStr> Iterator for Iter<'_, T> {
     type Item = Result<T, T::Err>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -970,7 +983,7 @@ impl<'a> Iterator for RawArguments<'a> {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        let (start, end) = self.tokens.get(0)?.span;
+        let (start, end) = self.tokens.first()?.span;
 
         self.tokens = &self.tokens[1..];
 

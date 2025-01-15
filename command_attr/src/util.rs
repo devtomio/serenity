@@ -5,19 +5,7 @@ use syn::parse::{Error, Parse, ParseStream, Result as SynResult};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
 use syn::token::{Comma, Mut};
-use syn::{
-    braced,
-    bracketed,
-    parenthesized,
-    parse_quote,
-    Attribute,
-    Ident,
-    Lifetime,
-    Lit,
-    Path,
-    PathSegment,
-    Type,
-};
+use syn::{parenthesized, parse_quote, Attribute, Ident, Lifetime, Lit, Path, PathSegment, Type};
 
 use crate::structures::CommandFun;
 
@@ -30,10 +18,10 @@ pub trait LitExt {
 impl LitExt for Lit {
     fn to_str(&self) -> String {
         match self {
-            Lit::Str(s) => s.value(),
-            Lit::ByteStr(s) => unsafe { String::from_utf8_unchecked(s.value()) },
-            Lit::Char(c) => c.value().to_string(),
-            Lit::Byte(b) => (b.value() as char).to_string(),
+            Self::Str(s) => s.value(),
+            Self::ByteStr(s) => unsafe { String::from_utf8_unchecked(s.value()) },
+            Self::Char(c) => c.value().to_string(),
+            Self::Byte(b) => (b.value() as char).to_string(),
             _ => panic!("values must be a (byte)string or a char"),
         }
     }
@@ -89,30 +77,6 @@ macro_rules! propagate_err {
             Err(e) => return $crate::util::into_stream(&e),
         }
     }};
-}
-
-#[derive(Debug)]
-pub struct Bracketed<T>(pub Punctuated<T, Comma>);
-
-impl<T: Parse> Parse for Bracketed<T> {
-    fn parse(input: ParseStream<'_>) -> SynResult<Self> {
-        let content;
-        bracketed!(content in input);
-
-        Ok(Bracketed(content.parse_terminated(T::parse)?))
-    }
-}
-
-#[derive(Debug)]
-pub struct Braced<T>(pub Punctuated<T, Comma>);
-
-impl<T: Parse> Parse for Braced<T> {
-    fn parse(input: ParseStream<'_>) -> SynResult<Self> {
-        let content;
-        braced!(content in input);
-
-        Ok(Braced(content.parse_terminated(T::parse)?))
-    }
 }
 
 #[derive(Debug)]
@@ -181,7 +145,7 @@ pub fn generate_type_validation(have: &Type, expect: &Type) -> syn::Stmt {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DeclarFor {
     Command,
     Help,
@@ -198,7 +162,7 @@ pub fn create_declaration_validations(fun: &mut CommandFun, dec_for: DeclarFor) 
     if fun.args.len() > len {
         return Err(Error::new(
             fun.args.last().unwrap().span(),
-            format_args!("function's arity exceeds more than {} arguments", len),
+            format_args!("function's arity exceeds more than {len} arguments"),
         ));
     }
 

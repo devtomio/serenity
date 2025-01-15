@@ -6,7 +6,10 @@
 
 Serenity is a Rust library for the Discord API.
 
-View the [examples] on how to make and structure a bot.
+View the [examples] on how to use serenity's API. To make a bot with slash commands or text
+commands, see the [poise](https://github.com/serenity-rs/poise) framework built on top of serenity.
+To send and receive data from voice channels, see the
+[songbird](https://github.com/serenity-rs/songbird) library.
 
 Serenity supports bot login via the use of [`Client::builder`].
 
@@ -42,46 +45,39 @@ A basic ping-pong bot looks like:
 use std::env;
 
 use serenity::async_trait;
-use serenity::prelude::*;
 use serenity::model::channel::Message;
-use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::{StandardFramework, CommandResult};
-
-#[group]
-#[commands(ping)]
-struct General;
+use serenity::prelude::*;
 
 struct Handler;
 
 #[async_trait]
-impl EventHandler for Handler {}
-
-#[tokio::main]
-async fn main() {
-    let framework = StandardFramework::new()
-        .configure(|c| c.prefix("~")) // set the bot's prefix to "~"
-        .group(&GENERAL_GROUP);
-
-    // Login with a bot token from the environment
-    let token = env::var("DISCORD_TOKEN").expect("token");
-    let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;
-    let mut client = Client::builder(token, intents)
-        .event_handler(Handler)
-        .framework(framework)
-        .await
-        .expect("Error creating client");
-
-    // start listening for events by starting a single shard
-    if let Err(why) = client.start().await {
-        println!("An error occurred while running the client: {:?}", why);
+impl EventHandler for Handler {
+    async fn message(&self, ctx: Context, msg: Message) {
+        if msg.content == "!ping" {
+            if let Err(why) = msg.channel_id.say(&ctx.http, "Pong!").await {
+                println!("Error sending message: {why:?}");
+            }
+        }
     }
 }
 
-#[command]
-async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
-    msg.reply(ctx, "Pong!").await?;
+#[tokio::main]
+async fn main() {
+    // Login with a bot token from the environment
+    let token = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
+    // Set gateway intents, which decides what events the bot will be notified about
+    let intents = GatewayIntents::GUILD_MESSAGES
+        | GatewayIntents::DIRECT_MESSAGES
+        | GatewayIntents::MESSAGE_CONTENT;
 
-    Ok(())
+    // Create a new instance of the Client, logging in as a bot.
+    let mut client =
+        Client::builder(&token, intents).event_handler(Handler).await.expect("Err creating client");
+
+    // Start listening for events by starting a single shard
+    if let Err(why) = client.start().await {
+        println!("Client error: {why:?}");
+    }
 }
 ```
 
@@ -96,10 +92,25 @@ Add the following to your `Cargo.toml` file:
 
 ```toml
 [dependencies]
-serenity = "0.11"
+serenity = "0.12"
+tokio = { version = "1.21.2", features = ["macros", "rt-multi-thread"] }
 ```
 
-Serenity supports a minimum of Rust 1.53.
+## MSRV Policy
+
+Serenity's minimum supported Rust version (MSRV) is Rust 1.74.
+
+We opt to keep MSRV stable on the `current` branch. This means it will remain
+unchanged between minor releases. Occasionally, dependencies may violate SemVer
+and update their own MSRV in a breaking way. As a result, pinning their
+versions will become necessary to successfully build Serenity using an older
+Rust release.
+
+The `next` branch tracks the latest Rust release as its MSRV. This allows for
+swift development as new languages features are stabilized, and reduces
+technical debt in the long run. When a new major release is cut, the MSRV on
+`current` will be updated to that of `next`, and we will commit to supporting
+that MSRV until the following major release.
 
 # Features
 
@@ -110,10 +121,10 @@ Cargo.toml:
 [dependencies.serenity]
 default-features = false
 features = ["pick", "your", "feature", "names", "here"]
-version = "0.11"
+version = "0.12"
 ```
 
-The default features are: `builder`, `cache`, `client`, `framework`, `gateway`,
+The default features are: `builder`, `cache`, `chrono`, `client`, `framework`, `gateway`,
 `http`, `model`, `standard_framework`, `utils`, and `rustls_backend`.
 
 There are these alternative default features, they require to set `default-features = false`:
@@ -140,21 +151,22 @@ the Discord gateway over a WebSocket client.
 enough level that optional parameters can be provided at will via a JsonMap.
 - **model**: Method implementations for models, acting as helper methods over
 the HTTP functions.
-- **standard_framework**: A standard, default implementation of the Framework
-- **time**: Use the `time` crate for Discord's timestamp fields. See `serenity::model::Timestamp`.
+- **standard_framework**: A standard, default implementation of the Framework. **NOTE**: Deprecated as of v0.12.1. Using the [poise](https://github.com/serenity-rs/poise) framework is recommended instead.
 - **utils**: Utility functions for common use cases by users.
 - **voice**: Enables registering a voice plugin to the client, which will handle actual voice connections from Discord.
 [lavalink-rs][project:lavalink-rs] or [Songbird][project:songbird] are recommended voice plugins.
 - **default_native_tls**: Default features but using `native_tls_backend`
 instead of `rustls_backend`.
-- **absolute_ratelimits**: Whether the library should use your system clock to avoid
-ratelimits, or use the interval given by Discord that might be less efficient
-due to latency in the network. If you turn this feature on, it is recommended to
-synchronise your clock with an NTP server (such as Google's).
-- **tokio_task_builder**: Enables tokio's `tracing` feature and uses `tokio::task::Builder` to spawn tasks with names if `RUSTFLAGS="--cfg tokio_unstable` is set.
+- **tokio_task_builder**: Enables tokio's `tracing` feature and uses `tokio::task::Builder` to spawn tasks with names if `RUSTFLAGS="--cfg tokio_unstable"` is set.
 - **unstable_discord_api**: Enables features of the Discord API that do not have a stable interface. The features might not have official documentation or are subject to change.
-- **simdjson**: Enables SIMD accelerated JSON parsing and rendering for API calls, use with `RUSTFLAGS="-C target-cpu=native"`
+- **simd_json**: Enables SIMD accelerated JSON parsing and rendering for API calls, if supported on the target CPU architecture.
 - **temp_cache**: Enables temporary caching in functions that retrieve data via the HTTP API.
+- **chrono**: Uses the `chrono` crate to represent timestamps. If disabled, the `time` crate is used instead.
+- **interactions_endpoint**: Enables tools related to Discord's Interactions Endpoint URL feature
+
+To enable all parts of the codebase, use the **"full"** feature.
+
+For possibly more up-to-date information, check the Cargo.toml.
 
 Serenity offers two TLS-backends, `rustls_backend` by default, you need to pick
 one if you do not use the default features:
@@ -182,7 +194,7 @@ features = [
     "utils",
     "rustls_backend",
 ]
-version = "0.11"
+version = "0.12"
 ```
 
 # Dependencies
@@ -190,6 +202,11 @@ version = "0.11"
 If you use the `native_tls_backend` and you are not developing on macOS or Windows, you will need:
 
 - openssl
+
+# Hosting
+
+If you want a quick and easy way to host your bot, you can use [shuttle][project:shuttle],
+a Rust-native cloud development platform that allows deploying Serenity bots for free.
 
 # Projects extending Serenity
 
@@ -209,7 +226,7 @@ If you use the `native_tls_backend` and you are not developing on macOS or Windo
 [`validate_token`]: https://docs.rs/serenity/*/serenity/utils/fn.validate_token.html
 [cache docs]: https://docs.rs/serenity/*/serenity/cache/index.html
 [ci]: https://github.com/serenity-rs/serenity/actions
-[ci-badge]: https://img.shields.io/github/workflow/status/serenity-rs/serenity/CI?style=flat-square
+[ci-badge]: https://img.shields.io/github/actions/workflow/status/serenity-rs/serenity/ci.yml?branch=current&style=flat-square
 [client's module-level documentation]: https://docs.rs/serenity/*/serenity/client/index.html
 [crates.io link]: https://crates.io/crates/serenity
 [crates.io version]: https://img.shields.io/crates/v/serenity.svg?style=flat-square
@@ -223,9 +240,10 @@ If you use the `native_tls_backend` and you are not developing on macOS or Windo
 [project:lavalink-rs]: https://gitlab.com/vicky5124/lavalink-rs/
 [project:songbird]: https://github.com/serenity-rs/songbird
 [project:poise]: https://github.com/kangalioo/poise
+[project:shuttle]: https://github.com/shuttle-hq/shuttle
 [repo:lavalink]: https://github.com/freyacodes/Lavalink
 [repo:andesite]: https://github.com/natanbc/andesite
 [repo:lavaplayer]: https://github.com/sedmelluq/lavaplayer
 [logo]: https://raw.githubusercontent.com/serenity-rs/serenity/current/logo.png
-[rust-version-badge]: https://img.shields.io/badge/rust-1.53.0+-93450a.svg?style=flat-square
-[rust-version-link]: https://blog.rust-lang.org/2021/06/17/Rust-1.53.0.html
+[rust-version-badge]: https://img.shields.io/badge/rust-1.74.0+-93450a.svg?style=flat-square
+[rust-version-link]: https://blog.rust-lang.org/2023/11/16/Rust-1.74.0.html

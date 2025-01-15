@@ -8,7 +8,7 @@ use syn::{Attribute, Ident, Lit, LitStr, Meta, NestedMeta, Path};
 use crate::structures::{Checks, Colour, HelpBehaviour, OnlyIn, Permissions};
 use crate::util::{AsOption, LitExt};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ValueKind {
     // #[<name>]
     Name,
@@ -26,10 +26,10 @@ pub enum ValueKind {
 impl fmt::Display for ValueKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ValueKind::Name => f.pad("`#[<name>]`"),
-            ValueKind::Equals => f.pad("`#[<name> = <value>]`"),
-            ValueKind::List => f.pad("`#[<name>([<value>, <value>, <value>, ...])]`"),
-            ValueKind::SingleList => f.pad("`#[<name>(<value>)]`"),
+            Self::Name => f.pad("`#[<name>]`"),
+            Self::Equals => f.pad("`#[<name> = <value>]`"),
+            Self::List => f.pad("`#[<name>([<value>, <value>, <value>, ...])]`"),
+            Self::SingleList => f.pad("`#[<name>(<value>)]`"),
         }
     }
 }
@@ -120,18 +120,18 @@ pub fn parse_values(attr: &Attribute) -> Result<Values> {
 #[derive(Debug, Clone)]
 struct DisplaySlice<'a, T>(&'a [T]);
 
-impl<'a, T: fmt::Display> fmt::Display for DisplaySlice<'a, T> {
+impl<T: fmt::Display> fmt::Display for DisplaySlice<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut iter = self.0.iter().enumerate();
 
         match iter.next() {
             None => f.write_str("nothing")?,
             Some((idx, elem)) => {
-                write!(f, "{}: {}", idx, elem)?;
+                write!(f, "{idx}: {elem}")?;
 
                 for (idx, elem) in iter {
                     f.write_char('\n')?;
-                    write!(f, "{}: {}", idx, elem)?;
+                    write!(f, "{idx}: {elem}")?;
                 }
             },
         }
@@ -193,7 +193,7 @@ impl AttributeOption for bool {
     fn parse(values: Values) -> Result<Self> {
         validate(&values, &[ValueKind::Name, ValueKind::SingleList])?;
 
-        Ok(values.literals.get(0).map_or(true, LitExt::to_bool))
+        Ok(values.literals.first().map_or(true, LitExt::to_bool))
     }
 }
 
@@ -219,7 +219,7 @@ impl AttributeOption for Option<String> {
     fn parse(values: Values) -> Result<Self> {
         validate(&values, &[ValueKind::Name, ValueKind::Equals, ValueKind::SingleList])?;
 
-        Ok(values.literals.get(0).map(LitExt::to_str))
+        Ok(values.literals.first().map(LitExt::to_str))
     }
 }
 
@@ -239,7 +239,7 @@ impl AttributeOption for Colour {
         let value = String::parse(values)?;
 
         Colour::from_str(&value)
-            .ok_or_else(|| Error::new(span, format_args!("invalid colour: \"{}\"", value)))
+            .ok_or_else(|| Error::new(span, format_args!("invalid colour: \"{value}\"")))
     }
 }
 
@@ -249,7 +249,7 @@ impl AttributeOption for HelpBehaviour {
         let value = String::parse(values)?;
 
         HelpBehaviour::from_str(&value)
-            .ok_or_else(|| Error::new(span, format_args!("invalid help behaviour: \"{}\"", value)))
+            .ok_or_else(|| Error::new(span, format_args!("invalid help behaviour: \"{value}\"")))
     }
 }
 
